@@ -17312,6 +17312,35 @@ int main(int argc, char** argv) {
         }
         Recorder recorder(device.GetContext());
         recorder.Activate();
+        if (argc == 2 && std::string_view(argv[1]) == "--sampled-upload-scratch-only") {
+            const auto& context = device.GetContext();
+            TextureDetiler detiler(context);
+            GuestTextureResource resource{};
+            resource.width = 64;
+            resource.height = 48;
+            resource.mipCount = 1;
+            resource.tileMode = TextureTileMode::kLinear;
+            resource.dimension = TextureDimension::k2D;
+            resource.format = 56;
+            const auto bytes = static_cast<std::size_t>(DescribeSurface(resource).guestBytes);
+            Require(bytes == 12288, "test texture does not use the observed upload size");
+            const std::vector<std::byte> first(bytes, std::byte{0x20});
+            const std::vector<std::byte> second(bytes, std::byte{0x60});
+            const VkComponentMapping identity{};
+            const auto commandBuffer = recorder.Commands();
+            Texture firstTexture(context, detiler, resource, identity, first);
+            Buffer importedBytes(context, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            std::memcpy(importedBytes.Bytes().data(), second.data(), bytes);
+            const HostImport import{resource.baseAddress, bytes, importedBytes.Handle(), VK_NULL_HANDLE, 0};
+            Texture secondTexture(context, detiler, resource, identity, std::span<const std::byte>{}, false, false, nullptr, std::nullopt, &import);
+            Texture thirdTexture(context, detiler, resource, identity, first);
+            Require(recorder.Commands() == commandBuffer, "texture uploads did not share the command buffer");
+            SampleProgram sample(context, recorder);
+            expectRed(sample.Red(firstTexture.View(), firstTexture.Layout(), 0), 0x20 / 255.0f, "first sampled upload");
+            expectRed(sample.Red(secondTexture.View(), secondTexture.Layout(), 0), 0x60 / 255.0f, "second sampled upload");
+            expectRed(sample.Red(thirdTexture.View(), thirdTexture.Layout(), 0), 0x20 / 255.0f, "third sampled upload");
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--command-reuse-only") {
             if (device.GetContext().hostImportAlignment == 0) return 77;
             const auto before = Recorder::StoreCounts().stores;
